@@ -18,16 +18,6 @@ def _int(name: str, default: int) -> int:
         return default
 
 
-def _opt_int(name: str) -> int | None:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
-
-
 @dataclass(frozen=True)
 class Settings:
     telegram_token: str
@@ -36,8 +26,7 @@ class Settings:
     wb_top_products: int
     wb_reviews_per_product: int
     wb_dest: int
-    wb_supplier_token: str
-    wb_own_supplier_id: int | None
+    wb_default_token: str  # опциональный — токен по умолчанию (если не хочешь вводить)
     wb_stats_days: int
     log_level: str
 
@@ -56,8 +45,7 @@ def load_settings() -> Settings:
         wb_top_products=_int("WB_TOP_PRODUCTS", 30),
         wb_reviews_per_product=_int("WB_REVIEWS_PER_PRODUCT", 30),
         wb_dest=_int("WB_DEST", -1257786),
-        wb_supplier_token=os.getenv("WB_SUPPLIER_TOKEN", "").strip(),
-        wb_own_supplier_id=_opt_int("WB_OWN_SUPPLIER_ID"),
+        wb_default_token=os.getenv("WB_SUPPLIER_TOKEN", "").strip(),
         wb_stats_days=_int("WB_STATS_DAYS", 30),
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
     )

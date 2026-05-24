@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import json
 import logging
 import random
 from typing import Any
@@ -77,6 +80,65 @@ QUESTIONS_PUBLIC_URL = "https://questions.wb.ru/api/v1/questions"
 
 class WBApiError(RuntimeError):
     pass
+
+
+def parse_wb_token(token: str) -> dict[str, Any]:
+    """Разбираем JWT-токен WB (только payload, без проверки подписи).
+
+    Возвращает payload как dict. В payload обычно есть поля:
+      - sid (supplier id, число)
+      - s (битовая маска скоупов)
+      - oid (organization id)
+      - exp (срок жизни, unix time)
+    """
+    parts = token.strip().split(".")
+    if len(parts) < 2:
+        raise WBApiError("Это не похоже на JWT-токен WB (нет точек)")
+    payload_b64 = parts[1]
+    padding = "=" * ((4 - len(payload_b64) % 4) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(payload_b64 + padding)
+        data = json.loads(raw.decode("utf-8"))
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise WBApiError(f"Не удалось разобрать payload JWT: {exc}") from exc
+    return data
+
+
+def token_scopes(payload: dict[str, Any]) -> list[str]:
+    """Расшифровка битовой маски s = scopes WB.
+
+    Битовая маска (по докам WB):
+      1   — Контент
+      2   — Аналитика
+      4   — Цены и скидки
+      8   — Маркетплейс
+      16  — Статистика
+      32  — Продвижение
+      64  — Вопросы и отзывы
+      128 — Рекомендации
+      256 — Покупатели
+      512 — Поставки
+      1024 — Возвраты
+      2048 — Документы
+      4096 — Тарифы
+    """
+    mask = int(payload.get("s") or 0)
+    names = {
+        1: "Контент",
+        2: "Аналитика",
+        4: "Цены и скидки",
+        8: "Маркетплейс",
+        16: "Статистика",
+        32: "Продвижение",
+        64: "Вопросы и отзывы",
+        128: "Рекомендации",
+        256: "Покупатели",
+        512: "Поставки",
+        1024: "Возвраты",
+        2048: "Документы",
+        4096: "Тарифы",
+    }
+    return [name for bit, name in names.items() if mask & bit]
 
 
 class WBClient:
@@ -435,7 +497,11 @@ class WBAnalyticsClient(WBAuthClient):
 
 
 class WBCommonClient(WBAuthClient):
-    """WB Common API: тарифы (комиссии WB, логистика коробов)."""
+    """WB Common API: seller-info + тарифы (комиссии WB, логистика коробов)."""
+
+    async def get_seller_info(self) -> dict[str, Any]:
+        url = f"{COMMON_API_BASE}/api/v1/seller-info"
+        return (await self._get(url)) or {}
 
     async def get_commissions(self) -> list[dict[str, Any]]:
         url = f"{COMMON_API_BASE}/api/v1/tariffs/commission"

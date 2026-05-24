@@ -3,28 +3,56 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-def main_menu(has_own_shop: bool = False) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="🔍 Анализ магазина", callback_data="menu:analyze")],
-        [InlineKeyboardButton(text="📦 Анализ товара", callback_data="menu:product")],
-        [InlineKeyboardButton(text="⭐ Только отзывы", callback_data="menu:reviews")],
-        [InlineKeyboardButton(text="💰 Только цены", callback_data="menu:prices")],
-    ]
-    if has_own_shop:
-        rows.append(
-            [InlineKeyboardButton(text="📊 Свои продажи (PlatSer)", callback_data="menu:own_sales")]
-        )
-    rows.extend([
-        [InlineKeyboardButton(text="🎯 PlatSer Group: советы", callback_data="menu:brand")],
-        [InlineKeyboardButton(text="ℹ️ О боте", callback_data="menu:about")],
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def connect_menu() -> InlineKeyboardMarkup:
+    """Меню до подключения токена."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔑 Подключить WB API", callback_data="menu:connect")],
+            [InlineKeyboardButton(text="ℹ️ О боте", callback_data="menu:about")],
+        ]
+    )
+
+
+def analysis_menu() -> InlineKeyboardMarkup:
+    """Главное меню анализа (когда токен подключён)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Полный разбор", callback_data="run:full")],
+            [
+                InlineKeyboardButton(text="💰 Цены", callback_data="run:prices"),
+                InlineKeyboardButton(text="⭐ Отзывы", callback_data="run:reviews"),
+            ],
+            [
+                InlineKeyboardButton(text="📦 Ассортимент", callback_data="run:assort"),
+                InlineKeyboardButton(text="📈 Спрос", callback_data="run:demand"),
+            ],
+            [
+                InlineKeyboardButton(text="🔁 Воронка", callback_data="run:funnel"),
+                InlineKeyboardButton(text="🖼 Контент", callback_data="run:content"),
+            ],
+            [InlineKeyboardButton(text="📊 Продажи (период)", callback_data="menu:own_sales")],
+            [InlineKeyboardButton(text="🎯 Стратегия PlatSer", callback_data="run:brand")],
+            [
+                InlineKeyboardButton(text="🔌 Сменить токен", callback_data="menu:connect"),
+                InlineKeyboardButton(text="ℹ️ О боте", callback_data="menu:about"),
+            ],
+            [InlineKeyboardButton(text="🗑 Удалить токен", callback_data="menu:disconnect")],
+        ]
+    )
 
 
 def back_to_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:home")],
+        ]
+    )
+
+
+def cancel_input() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✖️ Отмена", callback_data="menu:home")],
         ]
     )
 
@@ -45,45 +73,10 @@ def sales_periods() -> InlineKeyboardMarkup:
     )
 
 
-def cancel_input() -> InlineKeyboardMarkup:
+def after_report() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✖️ Отмена", callback_data="menu:home")],
-        ]
-    )
-
-
-def analysis_modes(supplier_id: int) -> InlineKeyboardMarkup:
-    sid = str(supplier_id)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Полный разбор", callback_data=f"run:full:{sid}")],
-            [
-                InlineKeyboardButton(text="💰 Цены", callback_data=f"run:prices:{sid}"),
-                InlineKeyboardButton(text="⭐ Отзывы", callback_data=f"run:reviews:{sid}"),
-            ],
-            [
-                InlineKeyboardButton(text="📦 Ассортимент", callback_data=f"run:assort:{sid}"),
-                InlineKeyboardButton(text="📈 Спрос", callback_data=f"run:demand:{sid}"),
-            ],
-            [
-                InlineKeyboardButton(text="🔁 Воронка", callback_data=f"run:funnel:{sid}"),
-                InlineKeyboardButton(text="🖼 Контент", callback_data=f"run:content:{sid}"),
-            ],
-            [InlineKeyboardButton(text="🎯 Совет под PlatSer", callback_data=f"run:brand:{sid}")],
-            [InlineKeyboardButton(text="🔙 Сменить магазин", callback_data="menu:analyze")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:home")],
-        ]
-    )
-
-
-def after_report(supplier_id: int) -> InlineKeyboardMarkup:
-    sid = str(supplier_id)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔁 Повторить разбор", callback_data=f"run:full:{sid}")],
-            [InlineKeyboardButton(text="⚙️ Другой режим", callback_data=f"modes:{sid}")],
-            [InlineKeyboardButton(text="🆕 Новый магазин", callback_data="menu:analyze")],
+            [InlineKeyboardButton(text="🔁 Другой разбор", callback_data="menu:home")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:home")],
         ]
     )

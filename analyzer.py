@@ -614,8 +614,7 @@ async def analyze_shop(
     supplier_id: int,
     top_products: int,
     reviews_per_product: int,
-    sales_token: str | None = None,
-    own_supplier_id: int | None = None,
+    wb_token: str,
     stats_days: int = 30,
 ) -> ShopReport:
     seller_info_task = client.get_seller_info(supplier_id)
@@ -676,31 +675,25 @@ async def analyze_shop(
 
     seller_info = await seller_info_task
 
-    # Авторизованные API — только для своего магазина
-    sales_summary: SalesSummary | None = None
-    content_summary: ContentQuality | None = None
-    funnel_summary: FunnelStats | None = None
-    margin_summary: MarginEstimate | None = None
-    stocks_summary: StocksSummary | None = None
-    if sales_token and own_supplier_id and own_supplier_id == supplier_id:
-        product_subjects = [p.category for p in products if p.category]
-        (
-            sales_summary,
-            content_summary,
-            funnel_summary,
-            margin_summary,
-        ) = await asyncio.gather(
-            fetch_sales_summary(sales_token, stats_days),
-            fetch_content_quality(sales_token, limit=top_products),
-            fetch_funnel(sales_token, days=stats_days),
-            fetch_margin(sales_token, product_subjects),
-        )
-        avg_daily = (
-            (sales_summary.sales_count / sales_summary.period_days)
-            if sales_summary and sales_summary.period_days
-            else None
-        )
-        stocks_summary = await fetch_stocks_summary(sales_token, avg_daily)
+    # Авторизованные API — токен обязателен, magазин = тот, что в токене
+    product_subjects = [p.category for p in products if p.category]
+    (
+        sales_summary,
+        content_summary,
+        funnel_summary,
+        margin_summary,
+    ) = await asyncio.gather(
+        fetch_sales_summary(wb_token, stats_days),
+        fetch_content_quality(wb_token, limit=top_products),
+        fetch_funnel(wb_token, days=stats_days),
+        fetch_margin(wb_token, product_subjects),
+    )
+    avg_daily = (
+        (sales_summary.sales_count / sales_summary.period_days)
+        if sales_summary and sales_summary.period_days
+        else None
+    )
+    stocks_summary = await fetch_stocks_summary(wb_token, avg_daily)
 
     return ShopReport(
         supplier_id=supplier_id,
