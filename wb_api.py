@@ -28,11 +28,13 @@ CARD_DETAIL_URLS = [
 ]
 SELLER_INFO_URL = "https://www.wildberries.ru/webapi/seller/data/short/{supplier_id}"
 
+WB_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
 WB_BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": WB_USER_AGENT,
     "Accept": "*/*",
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
     "Origin": "https://www.wildberries.ru",
@@ -40,7 +42,25 @@ WB_BROWSER_HEADERS = {
     "Sec-Fetch-Dest": "empty",
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "cross-site",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "x-client-name": "site",
     "Connection": "keep-alive",
+}
+
+WB_PAGE_HEADERS = {
+    "User-Agent": WB_USER_AGENT,
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 STATS_API_BASE = "https://statistics-api.wildberries.ru"
@@ -62,16 +82,35 @@ class WBClient:
         self._session: aiohttp.ClientSession | None = None
 
     async def __aenter__(self) -> "WBClient":
+        # cookie_jar нужен чтобы носить cookies между прогревом и API-запросами
         self._session = aiohttp.ClientSession(
             timeout=self._timeout,
             headers=WB_BROWSER_HEADERS,
+            cookie_jar=aiohttp.CookieJar(),
         )
+        self._warmed_up = False
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         if self._session is not None:
             await self._session.close()
             self._session = None
+
+    async def _warmup(self, supplier_id: int | None = None) -> None:
+        """Заходим как браузер: получаем cookies от wildberries.ru."""
+        if self._warmed_up or self._session is None:
+            return
+        urls = ["https://www.wildberries.ru/"]
+        if supplier_id:
+            urls.append(f"https://www.wildberries.ru/seller/{supplier_id}")
+        for url in urls:
+            try:
+                async with self._session.get(url, headers=WB_PAGE_HEADERS) as r:
+                    await r.read()
+                    log.debug("warmup %s → %s", url, r.status)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("warmup %s failed: %s", url, exc)
+        self._warmed_up = True
 
     async def _get_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         assert self._session is not None, "WBClient должен использоваться как async context manager"
@@ -85,8 +124,15 @@ class WBClient:
                 async with self._session.get(url, params=params) as resp:
                     if resp.status >= 500:
                         raise aiohttp.ClientError(f"WB {resp.status} on {url}")
-                    if resp.status in (403, 404):
-                        return {}
+                    if resp.status in (403, 404, 498):
+                        # пусть вызывающий код примет решение / зафиксирует
+                        raise aiohttp.ClientResponseError(
+                            request_info=resp.request_info,
+                            history=resp.history,
+                            status=resp.status,
+                            message=f"WB {resp.status}",
+                            headers=resp.headers,
+                        )
                     resp.raise_for_status()
                     return await resp.json(content_type=None)
         return {}
@@ -96,20 +142,27 @@ class WBClient:
     ) -> tuple[dict[str, Any], str | None]:
         """Пробуем url'ы по очереди. Возвращаем (data, рабочий_url)."""
         last_status = 0
+        tried: list[str] = []
         for url in urls:
             try:
                 data = await self._get_json(url, params=params)
+                tried.append(f"{url} → ok" if data else f"{url} → empty")
             except aiohttp.ClientResponseError as exc:
                 last_status = exc.status
-                log.debug("WB %s on %s, пробую следующий", exc.status, url)
+                tried.append(f"{url} → {exc.status}")
                 continue
             if data:
+                log.info("WB ok: %s", url)
                 return data, url
-        if last_status:
-            log.warning("Все WB url'ы вернули ошибку, последний статус %s", last_status)
+        log.warning(
+            "WB не отдал данные. Попытки: %s | последний статус: %s",
+            "; ".join(tried),
+            last_status,
+        )
         return {}, None
 
     async def get_seller_info(self, supplier_id: int) -> dict[str, Any]:
+        await self._warmup(supplier_id)
         try:
             data = await self._get_json(SELLER_INFO_URL.format(supplier_id=supplier_id))
         except Exception as exc:  # noqa: BLE001
@@ -119,6 +172,7 @@ class WBClient:
 
     async def get_seller_products(self, supplier_id: int, limit: int = 30) -> list[dict[str, Any]]:
         """Топ товаров продавца по популярности."""
+        await self._warmup(supplier_id)
         products: list[dict[str, Any]] = []
         page = 1
         working_url: str | None = None
