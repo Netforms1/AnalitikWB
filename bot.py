@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 from typing import Any
 
 from aiogram import Bot, Dispatcher, F
@@ -42,7 +43,7 @@ logging.basicConfig(
 
 bot = Bot(
     token=settings.telegram_token,
-    default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher(storage=MemoryStorage())
 gpt = GPTAnalyzer(api_key=settings.openai_api_key, model=settings.openai_model)
@@ -56,25 +57,27 @@ def _has_own_shop() -> bool:
     return bool(settings.wb_supplier_token and settings.wb_own_supplier_id)
 
 
+DIV = "━━━━━━━━━━━━━━━━━━━"
+
 WELCOME = (
-    "👋 *Привет!* Я бот аналитики *PlatSer Group*.\n\n"
+    "👋 <b>Привет!</b> Это бот аналитики <b>PlatSer Group</b>.\n\n"
     "Я разбираю любой магазин Wildberries и выдаю заключение через ChatGPT:\n"
-    "• 📈 спрос и потенциал\n"
-    "• 💰 ценовая политика (можно ли поднять цену)\n"
-    "• 📦 ассортимент и слабые карточки\n"
-    "• ⭐ боли клиентов из отзывов\n"
-    "• 🎯 рекомендации под цель бренда №1 в зоотоварах РФ\n\n"
-    "Выбирай действие 👇"
+    "📈 спрос и потенциал\n"
+    "💰 ценовая политика — можно ли поднять цену\n"
+    "📦 ассортимент и слабые карточки\n"
+    "⭐ боли клиентов из отзывов\n"
+    "🎯 рекомендации под цель «№1 в зоотоварах РФ»\n\n"
+    "<i>Выбирай действие 👇</i>"
 )
 
 ABOUT = (
-    "ℹ️ *AnalitikWB — PlatSer Group*\n\n"
+    f"ℹ️ <b>AnalitikWB — PlatSer Group</b>\n{DIV}\n\n"
     "Бот собирает публичные данные по продавцу на Wildberries "
-    "(карточки, цены, остатки, отзывы) и просит ChatGPT составить "
-    "развёрнутый отчёт со стратегическими выводами под бренд *PlatSer Group* — "
-    "корма и товары для животных, цель: №1 в России.\n\n"
-    "Нужен ID продавца WB (supplier_id). Найти его можно в URL магазина: "
-    "`wildberries.ru/seller/<ID>`."
+    "(карточки, цены, остатки, отзывы) и просит <b>ChatGPT</b> составить "
+    "развёрнутый отчёт со стратегическими выводами под бренд "
+    "<b>PlatSer Group</b> — корма и товары для животных, цель: №1 в России.\n\n"
+    "<blockquote>Нужен ID продавца WB (supplier_id). Найти его можно в URL "
+    "магазина: <code>wildberries.ru/seller/&lt;ID&gt;</code>.</blockquote>"
 )
 
 
@@ -100,19 +103,20 @@ async def cb_about(query: CallbackQuery) -> None:
 @dp.callback_query(F.data.in_({"menu:analyze", "menu:product", "menu:reviews", "menu:prices", "menu:brand"}))
 async def cb_ask_supplier(query: CallbackQuery, state: FSMContext) -> None:
     mode_map = {
-        "menu:analyze": ("full", "🔍 Полный анализ магазина"),
-        "menu:product": ("assort", "📦 Анализ ассортимента"),
-        "menu:reviews": ("reviews", "⭐ Анализ отзывов"),
-        "menu:prices": ("prices", "💰 Анализ цен"),
-        "menu:brand": ("brand", "🎯 Совет под PlatSer Group"),
+        "menu:analyze": ("full", "🔍 <b>Полный анализ магазина</b>"),
+        "menu:product": ("assort", "📦 <b>Анализ ассортимента</b>"),
+        "menu:reviews": ("reviews", "⭐ <b>Анализ отзывов</b>"),
+        "menu:prices": ("prices", "💰 <b>Анализ цен</b>"),
+        "menu:brand": ("brand", "🎯 <b>Совет под PlatSer Group</b>"),
     }
     mode, title = mode_map[query.data]
     await state.set_state(Flow.waiting_supplier_id)
     await state.update_data(pending_mode=mode)
     await query.message.edit_text(
-        f"{title}\n\n"
-        "Пришли *ID продавца WB* (только число).\n\n"
-        "Подсказка: ID есть в URL магазина — `wildberries.ru/seller/123456`.",
+        f"{title}\n{DIV}\n\n"
+        "Пришли <b>ID продавца WB</b> (только число).\n\n"
+        "<i>Подсказка:</i> ID есть в URL магазина — "
+        "<code>wildberries.ru/seller/123456</code>.",
         reply_markup=cancel_input(),
     )
     await query.answer()
@@ -124,7 +128,8 @@ async def on_supplier_id(message: Message, state: FSMContext) -> None:
     digits = "".join(ch for ch in raw if ch.isdigit())
     if not digits or len(digits) < 3:
         await message.answer(
-            "⚠️ Это не похоже на ID продавца. Пришли только число, например `123456`.",
+            "⚠️ Это не похоже на ID продавца. Пришли только число, "
+            "например <code>123456</code>.",
             reply_markup=cancel_input(),
         )
         return
@@ -133,7 +138,8 @@ async def on_supplier_id(message: Message, state: FSMContext) -> None:
     pending_mode = data.get("pending_mode", "full")
     await state.clear()
     await message.answer(
-        f"✅ ID принят: `{supplier_id}`\n\nВыбери режим разбора 👇",
+        f"✅ ID принят: <code>{supplier_id}</code>\n\n"
+        "<i>Выбери режим разбора 👇</i>",
         reply_markup=analysis_modes(supplier_id),
     )
     if pending_mode != "full":
@@ -146,7 +152,8 @@ async def cb_own_sales_menu(query: CallbackQuery) -> None:
         await query.answer("Не настроен WB_SUPPLIER_TOKEN / WB_OWN_SUPPLIER_ID", show_alert=True)
         return
     await query.message.edit_text(
-        "📊 *Свои продажи PlatSer Group*\n\nВыбери период анализа 👇",
+        f"📊 <b>Свои продажи PlatSer Group</b>\n{DIV}\n\n"
+        "<i>Выбери период анализа 👇</i>",
         reply_markup=sales_periods(),
     )
     await query.answer()
@@ -163,7 +170,9 @@ async def cb_own_sales_run(query: CallbackQuery) -> None:
 async def cb_modes(query: CallbackQuery) -> None:
     supplier_id = int(query.data.split(":")[1])
     await query.message.edit_text(
-        f"⚙️ Выбери режим разбора для магазина `{supplier_id}` 👇",
+        f"⚙️ <b>Режим разбора</b>\n"
+        f"Магазин: <code>{supplier_id}</code>\n\n"
+        "<i>Выбери что разобрать 👇</i>",
         reply_markup=analysis_modes(supplier_id),
     )
     await query.answer()
@@ -180,7 +189,7 @@ async def cb_run(query: CallbackQuery) -> None:
 async def _run_analysis(chat_id: int, supplier_id: int, mode: str) -> None:
     status = await bot.send_message(
         chat_id,
-        f"⏳ Собираю данные по продавцу `{supplier_id}`…",
+        f"⏳ Собираю данные по продавцу <code>{supplier_id}</code>…",
     )
     try:
         async with WBClient(dest=settings.wb_dest) as client:
@@ -195,28 +204,28 @@ async def _run_analysis(chat_id: int, supplier_id: int, mode: str) -> None:
             )
         if not report.products:
             await status.edit_text(
-                "🚫 Не удалось получить товары продавца.\n\n"
-                "Возможные причины:\n"
-                "• WB временно блокирует запросы (403) — попробуй ещё раз через 1–2 мин\n"
-                "• Неверный ID продавца — проверь URL `wildberries.ru/seller/<ID>`\n"
-                "• У продавца сейчас нет активных карточек в каталоге\n"
-                "• С данного IP идёт блокировка (VPN/зарубежный сервер)"
+                "🚫 <b>Не удалось получить товары продавца.</b>\n\n"
+                "<i>Возможные причины:</i>\n"
+                "▪️ WB временно блокирует запросы (403) — попробуй через 1–2 мин\n"
+                "▪️ Неверный ID продавца — проверь <code>wildberries.ru/seller/&lt;ID&gt;</code>\n"
+                "▪️ У продавца сейчас нет активных карточек\n"
+                "▪️ С данного IP идёт блокировка (VPN/зарубежный сервер)"
             )
             await bot.send_message(chat_id, "🏠", reply_markup=main_menu(has_own_shop=_has_own_shop()))
             return
 
         await status.edit_text(
-            f"📦 Найдено товаров: *{len(report.products)}*\n"
-            f"⭐ Среднее ratings топа: *{report.rating_stats.get('avg', 0)}*\n"
-            f"💬 Отзывов в выборке: *{report.reviews.total}*\n\n"
-            "🤖 Отправляю в ChatGPT…"
+            f"📦 Товаров: <b>{len(report.products)}</b>\n"
+            f"⭐ Средний рейтинг: <b>{report.rating_stats.get('avg', 0)}</b>\n"
+            f"💬 Отзывов в выборке: <b>{report.reviews.total}</b>\n\n"
+            "🤖 <i>Отправляю в ChatGPT…</i>"
         )
         payload = report_to_prompt_dict(report)
         text = await gpt.analyze(payload, mode=mode)
     except Exception as exc:  # noqa: BLE001
         log.exception("analysis failed")
         await status.edit_text(
-            f"❌ Ошибка анализа: `{html.escape(str(exc))[:300]}`"
+            f"❌ <b>Ошибка анализа:</b>\n<code>{html.escape(str(exc))[:500]}</code>"
         )
         await bot.send_message(chat_id, "🏠", reply_markup=main_menu(has_own_shop=_has_own_shop()))
         return
@@ -227,7 +236,7 @@ async def _run_analysis(chat_id: int, supplier_id: int, mode: str) -> None:
         await bot.send_message(chat_id, chunk, disable_web_page_preview=True)
     await bot.send_message(
         chat_id,
-        "✅ Готово. Что дальше?",
+        "✅ <b>Готово.</b> <i>Что дальше?</i>",
         reply_markup=after_report(supplier_id),
     )
 
@@ -237,13 +246,15 @@ async def _run_own_sales(chat_id: int, days: int) -> None:
         await bot.send_message(chat_id, "🚫 WB_SUPPLIER_TOKEN не задан в .env")
         return
     status = await bot.send_message(
-        chat_id, f"⏳ Тяну продажи за *{days}* дн. из WB Statistics API…"
+        chat_id, f"⏳ Тяну продажи за <b>{days}</b> дн. из WB Statistics API…"
     )
     try:
         summary = await fetch_sales_summary(settings.wb_supplier_token, days)
     except Exception as exc:  # noqa: BLE001
         log.exception("own sales fetch failed")
-        await status.edit_text(f"❌ Ошибка: `{html.escape(str(exc))[:300]}`")
+        await status.edit_text(
+            f"❌ <b>Ошибка:</b>\n<code>{html.escape(str(exc))[:500]}</code>"
+        )
         await bot.send_message(chat_id, "🏠", reply_markup=main_menu(_has_own_shop()))
         return
     if summary is None or (summary.sales_count == 0 and summary.orders_count == 0):
@@ -254,15 +265,18 @@ async def _run_own_sales(chat_id: int, days: int) -> None:
         return
 
     await status.edit_text(
-        f"💰 Выручка: *{summary.gross_revenue:,.0f} ₽*\n"
-        f"💵 К выплате: *{summary.net_payout:,.0f} ₽*\n"
-        f"🧾 Продаж: *{summary.sales_count}* | Возвратов: *{summary.returns_count}* "
-        f"({summary.returns_rate * 100:.1f}%)\n"
-        f"📥 Заказов: *{summary.orders_count}* | Отмен: *{summary.cancelled_orders}* "
-        f"({summary.cancel_rate * 100:.1f}%)\n"
-        f"🧮 Конверсия заказ→выкуп: *{summary.conversion_orders_to_sales * 100:.1f}%*\n"
-        f"💳 Средний чек: *{summary.avg_check:,.0f} ₽*\n\n"
-        "🤖 Отправляю в ChatGPT…"
+        f"📊 <b>СВОДКА ЗА {days} ДН.</b>\n{DIV}\n\n"
+        f"💰 Выручка: <b>{summary.gross_revenue:,.0f} ₽</b>\n"
+        f"💵 К выплате: <b>{summary.net_payout:,.0f} ₽</b>\n"
+        f"🧾 Продаж: <b>{summary.sales_count}</b> · "
+        f"Возвратов: <b>{summary.returns_count}</b> "
+        f"(<i>{summary.returns_rate * 100:.1f}%</i>)\n"
+        f"📥 Заказов: <b>{summary.orders_count}</b> · "
+        f"Отмен: <b>{summary.cancelled_orders}</b> "
+        f"(<i>{summary.cancel_rate * 100:.1f}%</i>)\n"
+        f"🧮 Конверсия заказ→выкуп: <b>{summary.conversion_orders_to_sales * 100:.1f}%</b>\n"
+        f"💳 Средний чек: <b>{summary.avg_check:,.0f} ₽</b>\n\n"
+        "🤖 <i>Отправляю в ChatGPT…</i>"
     )
     payload = {
         "supplier_id": settings.wb_own_supplier_id,
@@ -273,61 +287,109 @@ async def _run_own_sales(chat_id: int, days: int) -> None:
         text = await gpt.analyze(payload, mode="sales")
     except Exception as exc:  # noqa: BLE001
         log.exception("gpt sales failed")
-        await bot.send_message(chat_id, f"❌ GPT: `{html.escape(str(exc))[:300]}`")
+        await bot.send_message(
+            chat_id, f"❌ <b>GPT:</b>\n<code>{html.escape(str(exc))[:500]}</code>"
+        )
         await bot.send_message(chat_id, "🏠", reply_markup=main_menu(_has_own_shop()))
         return
     for chunk in _split_for_telegram(text):
         await bot.send_message(chat_id, chunk, disable_web_page_preview=True)
     await bot.send_message(
-        chat_id, "✅ Готово.", reply_markup=main_menu(_has_own_shop())
+        chat_id, "✅ <b>Готово.</b>", reply_markup=main_menu(_has_own_shop())
     )
 
 
 def _build_header(report: Any, mode: str) -> str:
     titles = {
-        "full": "🚀 Полный разбор магазина",
-        "prices": "💰 Анализ цен",
-        "reviews": "⭐ Анализ отзывов",
-        "assort": "📦 Анализ ассортимента",
-        "demand": "📈 Анализ спроса",
-        "brand": "🎯 Стратегия PlatSer Group",
+        "full": "🚀 ПОЛНЫЙ РАЗБОР МАГАЗИНА",
+        "prices": "💰 АНАЛИЗ ЦЕН",
+        "reviews": "⭐ АНАЛИЗ ОТЗЫВОВ",
+        "assort": "📦 АНАЛИЗ АССОРТИМЕНТА",
+        "demand": "📈 АНАЛИЗ СПРОСА",
+        "brand": "🎯 СТРАТЕГИЯ PLATSER GROUP",
     }
-    title = titles.get(mode, "📊 Отчёт")
-    seller = report.seller_trademark or report.seller_name or f"id {report.supplier_id}"
+    title = titles.get(mode, "📊 ОТЧЁТ")
+    seller_raw = report.seller_trademark or report.seller_name or f"id {report.supplier_id}"
+    seller = html.escape(seller_raw)
     base = (
-        f"{title}\n\n"
-        f"🏪 *{seller}* (id `{report.supplier_id}`)\n"
-        f"📦 Товаров: *{len(report.products)}* "
-        f"| 💬 Отзывы выборки: *{report.reviews.total}*\n"
-        f"💰 Цена ср/мед: *{report.price_stats.get('avg', 0)} ₽* / "
-        f"*{report.price_stats.get('median', 0)} ₽*\n"
-        f"⭐ Рейтинг ср: *{report.rating_stats.get('avg', 0)}* "
-        f"| 🚫 OOS-карточек: *{report.out_of_stock_products}*\n"
+        f"<b>{title}</b>\n{DIV}\n\n"
+        f"🏪 <b>{seller}</b> · id <code>{report.supplier_id}</code>\n"
+        f"📦 Товаров: <b>{len(report.products)}</b> · "
+        f"💬 отзывов: <b>{report.reviews.total}</b>\n"
+        f"💰 Цена ср/мед: <b>{report.price_stats.get('avg', 0)} ₽</b> / "
+        f"<b>{report.price_stats.get('median', 0)} ₽</b>\n"
+        f"⭐ Рейтинг ср: <b>{report.rating_stats.get('avg', 0)}</b> · "
+        f"🚫 OOS: <b>{report.out_of_stock_products}</b>\n"
     )
     if report.sales:
         s = report.sales
         base += (
-            f"📊 Продажи {s.period_days} дн: *{s.gross_revenue:,.0f} ₽* "
-            f"({s.sales_count} шт), возвратов *{s.returns_rate * 100:.1f}%*\n"
+            f"📊 Продажи {s.period_days} дн: <b>{s.gross_revenue:,.0f} ₽</b> "
+            f"(<b>{s.sales_count} шт</b>), возвратов <b>{s.returns_rate * 100:.1f}%</b>\n"
         )
     return base
 
 
+_OPEN_TAG_RE = re.compile(r"<(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler)\b[^>]*>")
+_CLOSE_TAG_RE = re.compile(r"</(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler)>")
+
+
+def _unclosed_tags(chunk: str) -> list[str]:
+    """Возвращает список тегов, открытых в chunk и не закрытых."""
+    stack: list[str] = []
+    pos = 0
+    while pos < len(chunk):
+        open_m = _OPEN_TAG_RE.search(chunk, pos)
+        close_m = _CLOSE_TAG_RE.search(chunk, pos)
+        if open_m and (not close_m or open_m.start() < close_m.start()):
+            stack.append(open_m.group(1))
+            pos = open_m.end()
+        elif close_m:
+            tag = close_m.group(1)
+            for i in range(len(stack) - 1, -1, -1):
+                if stack[i] == tag:
+                    del stack[i]
+                    break
+            pos = close_m.end()
+        else:
+            break
+    return stack
+
+
 def _split_for_telegram(text: str, limit: int = 3800) -> list[str]:
+    """Режем длинный HTML на куски, не разрывая теги.
+
+    Бьём по пустым строкам (границам параграфов). Если в куске остались
+    открытые теги — закрываем их в конце и открываем заново в следующем.
+    """
     if len(text) <= limit:
         return [text]
-    chunks: list[str] = []
+    paragraphs = text.split("\n\n")
+    raw_chunks: list[str] = []
     buf: list[str] = []
     size = 0
-    for line in text.splitlines(keepends=True):
-        if size + len(line) > limit and buf:
-            chunks.append("".join(buf))
-            buf, size = [], 0
-        buf.append(line)
-        size += len(line)
+    for p in paragraphs:
+        addition = ("\n\n" if buf else "") + p
+        if size + len(addition) > limit and buf:
+            raw_chunks.append("\n\n".join(buf))
+            buf, size = [p], len(p)
+        else:
+            buf.append(p)
+            size += len(addition)
     if buf:
-        chunks.append("".join(buf))
-    return chunks
+        raw_chunks.append("\n\n".join(buf))
+
+    # Закрываем/реоткрываем теги между кусками
+    fixed: list[str] = []
+    carry: list[str] = []
+    for chunk in raw_chunks:
+        prefix = "".join(f"<{t}>" for t in carry)
+        full = prefix + chunk
+        unclosed = _unclosed_tags(full)
+        suffix = "".join(f"</{t}>" for t in reversed(unclosed))
+        fixed.append(full + suffix)
+        carry = unclosed
+    return fixed
 
 
 async def main() -> None:
