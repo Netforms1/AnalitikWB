@@ -3,22 +3,43 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-def main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔍 Анализ магазина", callback_data="menu:analyze")],
-            [InlineKeyboardButton(text="📦 Анализ товара", callback_data="menu:product")],
-            [InlineKeyboardButton(text="⭐ Только отзывы", callback_data="menu:reviews")],
-            [InlineKeyboardButton(text="💰 Только цены", callback_data="menu:prices")],
-            [InlineKeyboardButton(text="🎯 PlatSer Group: советы", callback_data="menu:brand")],
-            [InlineKeyboardButton(text="ℹ️ О боте", callback_data="menu:about")],
-        ]
-    )
+def main_menu(has_own_shop: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🔍 Анализ магазина", callback_data="menu:analyze")],
+        [InlineKeyboardButton(text="📦 Анализ товара", callback_data="menu:product")],
+        [InlineKeyboardButton(text="⭐ Только отзывы", callback_data="menu:reviews")],
+        [InlineKeyboardButton(text="💰 Только цены", callback_data="menu:prices")],
+    ]
+    if has_own_shop:
+        rows.append(
+            [InlineKeyboardButton(text="📊 Свои продажи (PlatSer)", callback_data="menu:own_sales")]
+        )
+    rows.extend([
+        [InlineKeyboardButton(text="🎯 PlatSer Group: советы", callback_data="menu:brand")],
+        [InlineKeyboardButton(text="ℹ️ О боте", callback_data="menu:about")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def back_to_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:home")],
+        ]
+    )
+
+
+def sales_periods() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🗓 7 дней", callback_data="own_sales:7"),
+                InlineKeyboardButton(text="🗓 30 дней", callback_data="own_sales:30"),
+            ],
+            [
+                InlineKeyboardButton(text="🗓 60 дней", callback_data="own_sales:60"),
+                InlineKeyboardButton(text="🗓 90 дней", callback_data="own_sales:90"),
+            ],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:home")],
         ]
     )

@@ -14,7 +14,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, Message
 
-from analyzer import analyze_shop, report_to_prompt_dict
+from analyzer import (
+    analyze_shop,
+    fetch_sales_summary,
+    report_to_prompt_dict,
+    sales_summary_to_dict,
+)
 from config import load_settings
 from gpt import GPTAnalyzer
 from keyboards import (
@@ -23,6 +28,7 @@ from keyboards import (
     back_to_menu,
     cancel_input,
     main_menu,
+    sales_periods,
 )
 from wb_api import WBClient
 
@@ -44,6 +50,10 @@ gpt = GPTAnalyzer(api_key=settings.openai_api_key, model=settings.openai_model)
 
 class Flow(StatesGroup):
     waiting_supplier_id = State()
+
+
+def _has_own_shop() -> bool:
+    return bool(settings.wb_supplier_token and settings.wb_own_supplier_id)
 
 
 WELCOME = (
@@ -71,13 +81,13 @@ ABOUT = (
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(WELCOME, reply_markup=main_menu())
+    await message.answer(WELCOME, reply_markup=main_menu(has_own_shop=_has_own_shop()))
 
 
 @dp.callback_query(F.data == "menu:home")
 async def cb_home(query: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await query.message.edit_text(WELCOME, reply_markup=main_menu())
+    await query.message.edit_text(WELCOME, reply_markup=main_menu(has_own_shop=_has_own_shop()))
     await query.answer()
 
 
@@ -130,6 +140,25 @@ async def on_supplier_id(message: Message, state: FSMContext) -> None:
         await _run_analysis(message.chat.id, supplier_id, pending_mode)
 
 
+@dp.callback_query(F.data == "menu:own_sales")
+async def cb_own_sales_menu(query: CallbackQuery) -> None:
+    if not _has_own_shop():
+        await query.answer("Не настроен WB_SUPPLIER_TOKEN / WB_OWN_SUPPLIER_ID", show_alert=True)
+        return
+    await query.message.edit_text(
+        "📊 *Свои продажи PlatSer Group*\n\nВыбери период анализа 👇",
+        reply_markup=sales_periods(),
+    )
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("own_sales:"))
+async def cb_own_sales_run(query: CallbackQuery) -> None:
+    days = int(query.data.split(":")[1])
+    await query.answer(f"Тяну продажи за {days} дн…")
+    await _run_own_sales(query.message.chat.id, days)
+
+
 @dp.callback_query(F.data.startswith("modes:"))
 async def cb_modes(query: CallbackQuery) -> None:
     supplier_id = int(query.data.split(":")[1])
@@ -160,13 +189,16 @@ async def _run_analysis(chat_id: int, supplier_id: int, mode: str) -> None:
                 supplier_id=supplier_id,
                 top_products=settings.wb_top_products,
                 reviews_per_product=settings.wb_reviews_per_product,
+                sales_token=settings.wb_supplier_token or None,
+                own_supplier_id=settings.wb_own_supplier_id,
+                stats_days=settings.wb_stats_days,
             )
         if not report.products:
             await status.edit_text(
                 "🚫 Не удалось найти товары у этого продавца. "
                 "Проверь ID или попробуй другой магазин."
             )
-            await bot.send_message(chat_id, "🏠", reply_markup=main_menu())
+            await bot.send_message(chat_id, "🏠", reply_markup=main_menu(has_own_shop=_has_own_shop()))
             return
 
         await status.edit_text(
@@ -182,7 +214,7 @@ async def _run_analysis(chat_id: int, supplier_id: int, mode: str) -> None:
         await status.edit_text(
             f"❌ Ошибка анализа: `{html.escape(str(exc))[:300]}`"
         )
-        await bot.send_message(chat_id, "🏠", reply_markup=main_menu())
+        await bot.send_message(chat_id, "🏠", reply_markup=main_menu(has_own_shop=_has_own_shop()))
         return
 
     header = _build_header(report, mode)
@@ -193,6 +225,57 @@ async def _run_analysis(chat_id: int, supplier_id: int, mode: str) -> None:
         chat_id,
         "✅ Готово. Что дальше?",
         reply_markup=after_report(supplier_id),
+    )
+
+
+async def _run_own_sales(chat_id: int, days: int) -> None:
+    if not _has_own_shop():
+        await bot.send_message(chat_id, "🚫 WB_SUPPLIER_TOKEN не задан в .env")
+        return
+    status = await bot.send_message(
+        chat_id, f"⏳ Тяну продажи за *{days}* дн. из WB Statistics API…"
+    )
+    try:
+        summary = await fetch_sales_summary(settings.wb_supplier_token, days)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("own sales fetch failed")
+        await status.edit_text(f"❌ Ошибка: `{html.escape(str(exc))[:300]}`")
+        await bot.send_message(chat_id, "🏠", reply_markup=main_menu(_has_own_shop()))
+        return
+    if summary is None or (summary.sales_count == 0 and summary.orders_count == 0):
+        await status.edit_text(
+            "🤷 Нет продаж/заказов за выбранный период (или токен невалиден)."
+        )
+        await bot.send_message(chat_id, "🏠", reply_markup=main_menu(_has_own_shop()))
+        return
+
+    await status.edit_text(
+        f"💰 Выручка: *{summary.gross_revenue:,.0f} ₽*\n"
+        f"💵 К выплате: *{summary.net_payout:,.0f} ₽*\n"
+        f"🧾 Продаж: *{summary.sales_count}* | Возвратов: *{summary.returns_count}* "
+        f"({summary.returns_rate * 100:.1f}%)\n"
+        f"📥 Заказов: *{summary.orders_count}* | Отмен: *{summary.cancelled_orders}* "
+        f"({summary.cancel_rate * 100:.1f}%)\n"
+        f"🧮 Конверсия заказ→выкуп: *{summary.conversion_orders_to_sales * 100:.1f}%*\n"
+        f"💳 Средний чек: *{summary.avg_check:,.0f} ₽*\n\n"
+        "🤖 Отправляю в ChatGPT…"
+    )
+    payload = {
+        "supplier_id": settings.wb_own_supplier_id,
+        "seller": {"trademark": "PlatSer Group"},
+        "sales": sales_summary_to_dict(summary),
+    }
+    try:
+        text = await gpt.analyze(payload, mode="sales")
+    except Exception as exc:  # noqa: BLE001
+        log.exception("gpt sales failed")
+        await bot.send_message(chat_id, f"❌ GPT: `{html.escape(str(exc))[:300]}`")
+        await bot.send_message(chat_id, "🏠", reply_markup=main_menu(_has_own_shop()))
+        return
+    for chunk in _split_for_telegram(text):
+        await bot.send_message(chat_id, chunk, disable_web_page_preview=True)
+    await bot.send_message(
+        chat_id, "✅ Готово.", reply_markup=main_menu(_has_own_shop())
     )
 
 
@@ -207,7 +290,7 @@ def _build_header(report: Any, mode: str) -> str:
     }
     title = titles.get(mode, "📊 Отчёт")
     seller = report.seller_trademark or report.seller_name or f"id {report.supplier_id}"
-    return (
+    base = (
         f"{title}\n\n"
         f"🏪 *{seller}* (id `{report.supplier_id}`)\n"
         f"📦 Товаров: *{len(report.products)}* "
@@ -217,6 +300,13 @@ def _build_header(report: Any, mode: str) -> str:
         f"⭐ Рейтинг ср: *{report.rating_stats.get('avg', 0)}* "
         f"| 🚫 OOS-карточек: *{report.out_of_stock_products}*\n"
     )
+    if report.sales:
+        s = report.sales
+        base += (
+            f"📊 Продажи {s.period_days} дн: *{s.gross_revenue:,.0f} ₽* "
+            f"({s.sales_count} шт), возвратов *{s.returns_rate * 100:.1f}%*\n"
+        )
+    return base
 
 
 def _split_for_telegram(text: str, limit: int = 3800) -> list[str]:

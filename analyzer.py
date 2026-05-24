@@ -6,7 +6,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-from wb_api import WBClient, gather_with_concurrency
+from wb_api import WBClient, WBSellerStatsClient, gather_with_concurrency
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +45,26 @@ class ReviewsSummary:
 
 
 @dataclass
+class SalesSummary:
+    period_days: int
+    sales_count: int = 0
+    returns_count: int = 0
+    gross_revenue: float = 0.0
+    net_payout: float = 0.0
+    avg_check: float = 0.0
+    returns_rate: float = 0.0
+    orders_count: int = 0
+    cancelled_orders: int = 0
+    cancel_rate: float = 0.0
+    conversion_orders_to_sales: float = 0.0
+    daily_sales: list[dict[str, Any]] = field(default_factory=list)
+    top_sku_by_revenue: list[dict[str, Any]] = field(default_factory=list)
+    top_sku_by_units: list[dict[str, Any]] = field(default_factory=list)
+    top_warehouses: list[tuple[str, int]] = field(default_factory=list)
+    top_regions: list[tuple[str, int]] = field(default_factory=list)
+
+
+@dataclass
 class ShopReport:
     supplier_id: int
     seller_name: str
@@ -59,6 +79,7 @@ class ShopReport:
     feedbacks_total: int
     in_stock_total: int
     out_of_stock_products: int
+    sales: SalesSummary | None = None
 
 
 _NEG_STOPWORDS = {
@@ -142,11 +163,134 @@ def _aggregate_reviews(all_reviews: list[dict[str, Any]]) -> ReviewsSummary:
     )
 
 
+def aggregate_sales(
+    sales: list[dict[str, Any]],
+    orders: list[dict[str, Any]],
+    period_days: int,
+) -> SalesSummary:
+    summary = SalesSummary(period_days=period_days)
+    revenue_by_sku: Counter[int] = Counter()
+    units_by_sku: Counter[int] = Counter()
+    sku_names: dict[int, str] = {}
+    warehouses: Counter[str] = Counter()
+    regions: Counter[str] = Counter()
+    daily: dict[str, dict[str, float]] = {}
+
+    for s in sales:
+        sale_id = str(s.get("saleID") or "")
+        for_pay = float(s.get("forPay") or 0)
+        price_with_disc = float(s.get("priceWithDisc") or s.get("finishedPrice") or 0)
+        nm_id = int(s.get("nmId") or 0)
+        is_return = sale_id.startswith("R") or bool(s.get("IsStorno"))
+        date = (s.get("date") or "")[:10]
+        if is_return:
+            summary.returns_count += 1
+            summary.gross_revenue -= price_with_disc
+            summary.net_payout -= for_pay
+            if nm_id:
+                revenue_by_sku[nm_id] -= price_with_disc
+                units_by_sku[nm_id] -= 1
+        else:
+            summary.sales_count += 1
+            summary.gross_revenue += price_with_disc
+            summary.net_payout += for_pay
+            if nm_id:
+                revenue_by_sku[nm_id] += price_with_disc
+                units_by_sku[nm_id] += 1
+            wh = s.get("warehouseName")
+            if wh:
+                warehouses[str(wh)] += 1
+            region = s.get("regionName") or s.get("oblastOkrugName")
+            if region:
+                regions[str(region)] += 1
+        if nm_id and nm_id not in sku_names:
+            name = s.get("subject") or s.get("supplierArticle") or ""
+            if name:
+                sku_names[nm_id] = str(name)
+        if date and not is_return:
+            bucket = daily.setdefault(date, {"sales": 0, "revenue": 0.0})
+            bucket["sales"] += 1
+            bucket["revenue"] += price_with_disc
+
+    for o in orders:
+        summary.orders_count += 1
+        if o.get("isCancel"):
+            summary.cancelled_orders += 1
+
+    total_sales = summary.sales_count + summary.returns_count
+    summary.returns_rate = (
+        round(summary.returns_count / total_sales, 3) if total_sales else 0.0
+    )
+    summary.cancel_rate = (
+        round(summary.cancelled_orders / summary.orders_count, 3)
+        if summary.orders_count
+        else 0.0
+    )
+    summary.conversion_orders_to_sales = (
+        round(summary.sales_count / summary.orders_count, 3)
+        if summary.orders_count
+        else 0.0
+    )
+    summary.avg_check = (
+        round(summary.gross_revenue / summary.sales_count, 2)
+        if summary.sales_count
+        else 0.0
+    )
+    summary.gross_revenue = round(summary.gross_revenue, 2)
+    summary.net_payout = round(summary.net_payout, 2)
+
+    summary.top_sku_by_revenue = [
+        {
+            "nm_id": nm,
+            "name": sku_names.get(nm, ""),
+            "revenue_rub": round(rev, 2),
+            "units": units_by_sku.get(nm, 0),
+        }
+        for nm, rev in revenue_by_sku.most_common(10)
+    ]
+    summary.top_sku_by_units = [
+        {
+            "nm_id": nm,
+            "name": sku_names.get(nm, ""),
+            "units": units,
+            "revenue_rub": round(revenue_by_sku.get(nm, 0.0), 2),
+        }
+        for nm, units in units_by_sku.most_common(10)
+    ]
+    summary.top_warehouses = warehouses.most_common(5)
+    summary.top_regions = regions.most_common(5)
+    summary.daily_sales = [
+        {
+            "date": d,
+            "sales": int(v["sales"]),
+            "revenue_rub": round(v["revenue"], 2),
+        }
+        for d, v in sorted(daily.items())
+    ]
+    return summary
+
+
+async def fetch_sales_summary(
+    token: str, days: int
+) -> SalesSummary | None:
+    try:
+        async with WBSellerStatsClient(token) as client:
+            sales = await client.get_sales(days_back=days)
+            orders = await client.get_orders(days_back=days)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("sales fetch failed: %s", exc)
+        return None
+    return aggregate_sales(sales or [], orders or [], period_days=days)
+
+
 async def analyze_shop(
     client: WBClient,
     supplier_id: int,
     top_products: int,
     reviews_per_product: int,
+    sales_token: str | None = None,
+    own_supplier_id: int | None = None,
+    stats_days: int = 30,
 ) -> ShopReport:
     seller_info_task = client.get_seller_info(supplier_id)
     products_raw = await client.get_seller_products(supplier_id, limit=top_products)
@@ -193,6 +337,9 @@ async def analyze_shop(
     }
 
     seller_info = await seller_info_task
+    sales_summary: SalesSummary | None = None
+    if sales_token and own_supplier_id and own_supplier_id == supplier_id:
+        sales_summary = await fetch_sales_summary(sales_token, stats_days)
     return ShopReport(
         supplier_id=supplier_id,
         seller_name=str(seller_info.get("name") or ""),
@@ -207,7 +354,29 @@ async def analyze_shop(
         feedbacks_total=sum(p.feedbacks for p in products),
         in_stock_total=sum(p.in_stock for p in products),
         out_of_stock_products=sum(1 for p in products if p.in_stock == 0),
+        sales=sales_summary,
     )
+
+
+def sales_summary_to_dict(s: SalesSummary) -> dict[str, Any]:
+    return {
+        "period_days": s.period_days,
+        "sales_count": s.sales_count,
+        "returns_count": s.returns_count,
+        "returns_rate": s.returns_rate,
+        "orders_count": s.orders_count,
+        "cancelled_orders": s.cancelled_orders,
+        "cancel_rate": s.cancel_rate,
+        "conversion_orders_to_sales": s.conversion_orders_to_sales,
+        "gross_revenue_rub": s.gross_revenue,
+        "net_payout_rub": s.net_payout,
+        "avg_check_rub": s.avg_check,
+        "top_sku_by_revenue": s.top_sku_by_revenue,
+        "top_sku_by_units": s.top_sku_by_units,
+        "top_warehouses": s.top_warehouses,
+        "top_regions": s.top_regions,
+        "daily_sales": s.daily_sales,
+    }
 
 
 def report_to_prompt_dict(report: ShopReport) -> dict[str, Any]:
@@ -256,4 +425,5 @@ def report_to_prompt_dict(report: ShopReport) -> dict[str, Any]:
             }
             for p in top_products
         ],
+        "sales": sales_summary_to_dict(report.sales) if report.sales else None,
     }

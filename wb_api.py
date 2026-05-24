@@ -24,6 +24,11 @@ SELLER_CATALOG_URL = "https://catalog.wb.ru/sellers/v2/catalog"
 CARD_DETAIL_URL = "https://card.wb.ru/cards/v2/detail"
 SELLER_INFO_URL = "https://www.wildberries.ru/webapi/seller/data/short/{supplier_id}"
 
+STATS_API_BASE = "https://statistics-api.wildberries.ru"
+STATS_SALES_URL = f"{STATS_API_BASE}/api/v1/supplier/sales"
+STATS_ORDERS_URL = f"{STATS_API_BASE}/api/v1/supplier/orders"
+STATS_STOCKS_URL = f"{STATS_API_BASE}/api/v1/supplier/stocks"
+
 
 class WBApiError(RuntimeError):
     pass
@@ -132,6 +137,78 @@ class WBClient:
                 feedbacks.sort(key=lambda f: f.get("createdDate", ""), reverse=True)
                 return feedbacks[:take]
         return []
+
+
+class WBSellerStatsClient:
+    """Клиент к WB Statistics API (продажи, заказы, остатки). Нужен JWT-токен."""
+
+    def __init__(self, token: str, timeout: float = 60.0) -> None:
+        if not token:
+            raise WBApiError("WB_SUPPLIER_TOKEN пуст — Statistics API недоступен")
+        self._token = token
+        self._timeout = aiohttp.ClientTimeout(total=timeout)
+        self._session: aiohttp.ClientSession | None = None
+
+    async def __aenter__(self) -> "WBSellerStatsClient":
+        self._session = aiohttp.ClientSession(
+            timeout=self._timeout,
+            headers={
+                "Authorization": self._token,
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json",
+            },
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
+
+    async def _get_json(self, url: str, params: dict[str, Any]) -> Any:
+        assert self._session is not None
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(4),
+            wait=wait_exponential(multiplier=1, min=2, max=20),
+            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+            reraise=True,
+        ):
+            with attempt:
+                async with self._session.get(url, params=params) as resp:
+                    if resp.status == 401:
+                        raise WBApiError(
+                            "WB Statistics API: 401 — проверь WB_SUPPLIER_TOKEN"
+                        )
+                    if resp.status == 429:
+                        await asyncio.sleep(20)
+                        raise aiohttp.ClientError("WB 429 rate limit")
+                    if resp.status >= 500:
+                        raise aiohttp.ClientError(f"WB stats {resp.status}")
+                    resp.raise_for_status()
+                    return await resp.json(content_type=None)
+        return None
+
+    @staticmethod
+    def _date_from(days_back: int) -> str:
+        from datetime import datetime, timedelta, timezone
+
+        dt = datetime.now(tz=timezone.utc) - timedelta(days=days_back)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+    async def get_sales(self, days_back: int = 30) -> list[dict[str, Any]]:
+        params = {"dateFrom": self._date_from(days_back), "flag": 0}
+        data = await self._get_json(STATS_SALES_URL, params=params)
+        return data or []
+
+    async def get_orders(self, days_back: int = 30) -> list[dict[str, Any]]:
+        params = {"dateFrom": self._date_from(days_back), "flag": 0}
+        data = await self._get_json(STATS_ORDERS_URL, params=params)
+        return data or []
+
+    async def get_stocks(self, days_back: int = 7) -> list[dict[str, Any]]:
+        params = {"dateFrom": self._date_from(days_back)}
+        data = await self._get_json(STATS_STOCKS_URL, params=params)
+        return data or []
 
 
 async def gather_with_concurrency(n: int, *coros):
