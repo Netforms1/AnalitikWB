@@ -26,6 +26,8 @@ class Settings:
     wb_top_products: int
     wb_reviews_per_product: int
     wb_dest: int
+    wb_default_token: str  # опциональный — токен по умолчанию (если не хочешь вводить)
+    wb_stats_days: int
     log_level: str
 
 
@@ -39,10 +41,12 @@ def load_settings() -> Settings:
     return Settings(
         telegram_token=telegram_token,
         openai_api_key=openai_api_key,
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip(),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5").strip(),
         wb_top_products=_int("WB_TOP_PRODUCTS", 30),
         wb_reviews_per_product=_int("WB_REVIEWS_PER_PRODUCT", 30),
         wb_dest=_int("WB_DEST", -1257786),
+        wb_default_token=os.getenv("WB_SUPPLIER_TOKEN", "").strip(),
+        wb_stats_days=_int("WB_STATS_DAYS", 30),
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
     )
 
