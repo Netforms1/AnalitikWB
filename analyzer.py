@@ -130,7 +130,7 @@ class QuestionsSummary:
 
 @dataclass
 class ShopReport:
-    supplier_id: int
+    supplier_id: str
     seller_name: str
     seller_trademark: str
     seller_rating: float | None
@@ -611,41 +611,66 @@ async def fetch_sales_summary(
 
 async def analyze_shop(
     client: WBClient,
-    supplier_id: int,
     top_products: int,
     reviews_per_product: int,
     wb_token: str,
     stats_days: int = 30,
+    supplier_display: str = "",
+    seller_name: str = "",
+    seller_trademark: str = "",
 ) -> ShopReport:
-    seller_info_task = client.get_seller_info(supplier_id)
-    products_raw = await client.get_seller_products(supplier_id, limit=top_products)
-    if not products_raw:
-        seller_info = await seller_info_task
-        return ShopReport(
-            supplier_id=supplier_id,
-            seller_name=str(seller_info.get("name") or ""),
-            seller_trademark=str(seller_info.get("trademark") or ""),
-            seller_rating=seller_info.get("valuation"),
-            seller_sale_item_qty=seller_info.get("saleItemQuantity"),
-            products=[],
-            reviews=ReviewsSummary(),
-            categories=Counter(),
-            price_stats={},
-            rating_stats={},
-            feedbacks_total=0,
-            in_stock_total=0,
-            out_of_stock_products=0,
-        )
+    """Полный разбор магазина по токену WB. supplier_id для отображения только.
 
-    nm_ids = [int(p["id"]) for p in products_raw if p.get("id")]
-    cards = await client.get_cards_details(nm_ids)
-    products = [_build_product_summary(c) for c in cards]
+    SKU магазина берём из Content API (нужен скоуп Контент). Цены/рейтинги/
+    отзывы — публичные card.wb.ru / feedbacks.wb.ru по nmID/imtID.
+    """
+    # 1) Свои карточки из Content API
+    own_cards: list[dict[str, Any]] = []
+    try:
+        async with WBContentClient(wb_token) as content_client:
+            own_cards = await content_client.get_cards(limit=top_products)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("content cards fetch failed: %s", exc)
+
+    nm_ids: list[int] = []
+    for c in own_cards:
+        nm = c.get("nmID") or c.get("nmId") or c.get("id")
+        try:
+            if nm:
+                nm_ids.append(int(nm))
+        except (TypeError, ValueError):
+            continue
+
+    # 2) Публичные детали по nmID (цена, рейтинг, feedbacks, остатки на витрине)
+    public_cards: list[dict[str, Any]] = []
+    if nm_ids:
+        try:
+            public_cards = await client.get_cards_details(nm_ids[:top_products])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("public cards fetch failed: %s", exc)
+    products = [_build_product_summary(c) for c in public_cards]
 
     imt_ids = list({p.imt_id for p in products if p.imt_id})[:top_products]
-    review_results = await gather_with_concurrency(
-        6, *(client.get_reviews(imt, take=reviews_per_product) for imt in imt_ids)
-    )
-    all_reviews: list[dict[str, Any]] = [item for batch in review_results for item in batch]
+
+    # 3) Отзывы и вопросы (публично, по imtID)
+    all_reviews: list[dict[str, Any]] = []
+    questions_summary: QuestionsSummary | None = None
+    if imt_ids:
+        try:
+            review_results = await gather_with_concurrency(
+                6, *(client.get_reviews(imt, take=reviews_per_product) for imt in imt_ids)
+            )
+            all_reviews = [item for batch in review_results for item in batch]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("reviews fetch failed: %s", exc)
+        try:
+            q_results = await gather_with_concurrency(
+                4, *(client.get_questions(imt) for imt in imt_ids[:15])
+            )
+            all_questions = [q for batch in q_results for q in batch]
+            questions_summary = aggregate_questions(all_questions)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("questions fetch failed: %s", exc)
 
     sale_prices = [p.sale_price for p in products if p.sale_price > 0]
     ratings = [p.rating for p in products if p.rating > 0]
@@ -661,30 +686,26 @@ async def analyze_shop(
         "max": round(max(ratings), 2) if ratings else 0.0,
     }
 
-    # Q&A (публично) — для любого магазина
-    questions_summary: QuestionsSummary | None = None
-    if imt_ids:
-        try:
-            q_results = await gather_with_concurrency(
-                4, *(client.get_questions(imt) for imt in imt_ids[:15])
-            )
-            all_questions = [q for batch in q_results for q in batch]
-            questions_summary = aggregate_questions(all_questions)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("questions fetch failed: %s", exc)
+    # 4) Авторизованные API параллельно
+    product_subjects: list[str] = []
+    seen: set[str] = set()
+    for c in own_cards:
+        s = str(c.get("subjectName") or c.get("subject") or "").strip()
+        if s and s not in seen:
+            seen.add(s)
+            product_subjects.append(s)
+    for p in products:
+        if p.category and p.category not in seen:
+            seen.add(p.category)
+            product_subjects.append(p.category)
 
-    seller_info = await seller_info_task
-
-    # Авторизованные API — токен обязателен, magазин = тот, что в токене
-    product_subjects = [p.category for p in products if p.category]
+    content_summary = aggregate_content(own_cards) if own_cards else None
     (
         sales_summary,
-        content_summary,
         funnel_summary,
         margin_summary,
     ) = await asyncio.gather(
         fetch_sales_summary(wb_token, stats_days),
-        fetch_content_quality(wb_token, limit=top_products),
         fetch_funnel(wb_token, days=stats_days),
         fetch_margin(wb_token, product_subjects),
     )
@@ -696,11 +717,11 @@ async def analyze_shop(
     stocks_summary = await fetch_stocks_summary(wb_token, avg_daily)
 
     return ShopReport(
-        supplier_id=supplier_id,
-        seller_name=str(seller_info.get("name") or ""),
-        seller_trademark=str(seller_info.get("trademark") or ""),
-        seller_rating=seller_info.get("valuation"),
-        seller_sale_item_qty=seller_info.get("saleItemQuantity"),
+        supplier_id=str(supplier_display or ""),
+        seller_name=seller_name,
+        seller_trademark=seller_trademark,
+        seller_rating=None,
+        seller_sale_item_qty=None,
         products=products,
         reviews=_aggregate_reviews(all_reviews),
         categories=Counter(p.category for p in products if p.category),

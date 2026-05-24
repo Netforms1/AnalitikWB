@@ -315,23 +315,28 @@ async def cb_run(query: CallbackQuery, state: FSMContext) -> None:
 
 async def _run_analysis(chat_id: int, mode: str, data: dict[str, Any]) -> None:
     seller = data["seller"]
-    supplier_id = int(seller.get("sid") or seller.get("supplier_id") or 0)
+    sid_raw = seller.get("sid") or seller.get("supplier_id") or seller.get("oid") or ""
+    supplier_display = str(sid_raw)
     token = data["wb_token"]
-    seller_name = seller.get("name") or seller.get("trademark") or f"id {supplier_id}"
+    name = seller.get("name") or ""
+    trademark = seller.get("trademark") or ""
+    display = name or trademark or f"id {supplier_display}"
     status = await bot.send_message(
         chat_id,
-        f"⏳ Собираю данные по магазину <b>{html.escape(seller_name)}</b> "
-        f"(<code>{supplier_id}</code>) через WB API…",
+        f"⏳ Собираю данные по магазину <b>{html.escape(display)}</b> "
+        f"через WB API…",
     )
     try:
         async with WBClient(dest=settings.wb_dest) as client:
             report = await analyze_shop(
                 client,
-                supplier_id=supplier_id,
                 top_products=settings.wb_top_products,
                 reviews_per_product=settings.wb_reviews_per_product,
                 wb_token=token,
                 stats_days=settings.wb_stats_days,
+                supplier_display=supplier_display,
+                seller_name=name,
+                seller_trademark=trademark,
             )
         if not report.products and not report.sales and not report.funnel:
             await status.edit_text(
