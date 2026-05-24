@@ -195,8 +195,12 @@ async def _run_analysis(chat_id: int, supplier_id: int, mode: str) -> None:
             )
         if not report.products:
             await status.edit_text(
-                "🚫 Не удалось найти товары у этого продавца. "
-                "Проверь ID или попробуй другой магазин."
+                "🚫 Не удалось получить товары продавца.\n\n"
+                "Возможные причины:\n"
+                "• WB временно блокирует запросы (403) — попробуй ещё раз через 1–2 мин\n"
+                "• Неверный ID продавца — проверь URL `wildberries.ru/seller/<ID>`\n"
+                "• У продавца сейчас нет активных карточек в каталоге\n"
+                "• С данного IP идёт блокировка (VPN/зарубежный сервер)"
             )
             await bot.send_message(chat_id, "🏠", reply_markup=main_menu(has_own_shop=_has_own_shop()))
             return

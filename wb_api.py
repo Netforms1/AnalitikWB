@@ -15,14 +15,33 @@ from tenacity import (
 
 log = logging.getLogger(__name__)
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
-
-SELLER_CATALOG_URL = "https://catalog.wb.ru/sellers/v2/catalog"
-CARD_DETAIL_URL = "https://card.wb.ru/cards/v2/detail"
+# WB периодически меняет версии путей. Пробуем по очереди, пока не ответит 200.
+SELLER_CATALOG_URLS = [
+    "https://catalog.wb.ru/sellers/v4/catalog",
+    "https://catalog.wb.ru/sellers/v2/catalog",
+    "https://catalog.wb.ru/sellers/catalog",
+]
+CARD_DETAIL_URLS = [
+    "https://card.wb.ru/cards/v4/detail",
+    "https://card.wb.ru/cards/v2/detail",
+    "https://card.wb.ru/cards/v1/detail",
+]
 SELLER_INFO_URL = "https://www.wildberries.ru/webapi/seller/data/short/{supplier_id}"
+
+WB_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "*/*",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Origin": "https://www.wildberries.ru",
+    "Referer": "https://www.wildberries.ru/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "cross-site",
+    "Connection": "keep-alive",
+}
 
 STATS_API_BASE = "https://statistics-api.wildberries.ru"
 STATS_SALES_URL = f"{STATS_API_BASE}/api/v1/supplier/sales"
@@ -45,7 +64,7 @@ class WBClient:
     async def __aenter__(self) -> "WBClient":
         self._session = aiohttp.ClientSession(
             timeout=self._timeout,
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+            headers=WB_BROWSER_HEADERS,
         )
         return self
 
@@ -66,11 +85,29 @@ class WBClient:
                 async with self._session.get(url, params=params) as resp:
                     if resp.status >= 500:
                         raise aiohttp.ClientError(f"WB {resp.status} on {url}")
-                    if resp.status == 404:
+                    if resp.status in (403, 404):
                         return {}
                     resp.raise_for_status()
                     return await resp.json(content_type=None)
         return {}
+
+    async def _get_json_fallback(
+        self, urls: list[str], params: dict[str, Any] | None = None
+    ) -> tuple[dict[str, Any], str | None]:
+        """Пробуем url'ы по очереди. Возвращаем (data, рабочий_url)."""
+        last_status = 0
+        for url in urls:
+            try:
+                data = await self._get_json(url, params=params)
+            except aiohttp.ClientResponseError as exc:
+                last_status = exc.status
+                log.debug("WB %s on %s, пробую следующий", exc.status, url)
+                continue
+            if data:
+                return data, url
+        if last_status:
+            log.warning("Все WB url'ы вернули ошибку, последний статус %s", last_status)
+        return {}, None
 
     async def get_seller_info(self, supplier_id: int) -> dict[str, Any]:
         try:
@@ -84,17 +121,27 @@ class WBClient:
         """Топ товаров продавца по популярности."""
         products: list[dict[str, Any]] = []
         page = 1
+        working_url: str | None = None
         while len(products) < limit and page <= 10:
             params = {
+                "ab_testid": "false",
                 "appType": 1,
                 "curr": "rub",
                 "dest": self._dest,
+                "hide_dtype": 10,
+                "lang": "ru",
                 "sort": "popular",
                 "spp": 30,
+                "suppressSpellcheck": "false",
                 "supplier": supplier_id,
                 "page": page,
             }
-            data = await self._get_json(SELLER_CATALOG_URL, params=params)
+            if working_url:
+                data = await self._get_json(working_url, params=params)
+            else:
+                data, working_url = await self._get_json_fallback(
+                    SELLER_CATALOG_URLS, params=params
+                )
             batch = (((data or {}).get("data") or {}).get("products")) or []
             if not batch:
                 break
@@ -106,16 +153,24 @@ class WBClient:
         if not nm_ids:
             return []
         out: list[dict[str, Any]] = []
+        working_url: str | None = None
         for chunk_start in range(0, len(nm_ids), 100):
             chunk = nm_ids[chunk_start : chunk_start + 100]
             params = {
                 "appType": 1,
                 "curr": "rub",
                 "dest": self._dest,
+                "hide_dtype": 10,
+                "lang": "ru",
                 "spp": 30,
                 "nm": ";".join(str(i) for i in chunk),
             }
-            data = await self._get_json(CARD_DETAIL_URL, params=params)
+            if working_url:
+                data = await self._get_json(working_url, params=params)
+            else:
+                data, working_url = await self._get_json_fallback(
+                    CARD_DETAIL_URLS, params=params
+                )
             out.extend((((data or {}).get("data") or {}).get("products")) or [])
         return out
 
@@ -154,7 +209,7 @@ class WBSellerStatsClient:
             timeout=self._timeout,
             headers={
                 "Authorization": self._token,
-                "User-Agent": USER_AGENT,
+                "User-Agent": WB_BROWSER_HEADERS["User-Agent"],
                 "Accept": "application/json",
             },
         )
