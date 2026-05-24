@@ -367,8 +367,8 @@ class WBAuthClient:
     ) -> Any:
         assert self._session is not None
         async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(4),
-            wait=wait_exponential(multiplier=1, min=2, max=20),
+            stop=stop_after_attempt(2),
+            wait=wait_exponential(multiplier=1, min=2, max=8),
             retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
             reraise=True,
         ):
@@ -386,8 +386,12 @@ class WBAuthClient:
                             "(или нет подписки Аналитика Pro)"
                         )
                     if resp.status == 429:
-                        await asyncio.sleep(20)
-                        raise aiohttp.ClientError("WB 429 rate limit")
+                        # не залипаем на rate-limit — отдаём наверх,
+                        # пусть вызывающий решает (для не критичных
+                        # эндпоинтов вернём None)
+                        raise WBApiError(
+                            f"WB {url}: 429 — превышен лимит, попробуй позже"
+                        )
                     if resp.status >= 500:
                         raise aiohttp.ClientError(f"WB {resp.status} {url}")
                     if resp.status == 404:

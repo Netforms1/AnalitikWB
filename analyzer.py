@@ -699,6 +699,15 @@ async def analyze_shop(
             seen.add(p.category)
             product_subjects.append(p.category)
 
+    # Если имя/бренд магазина не передали — пробуем взять самый частый
+    # бренд из своих карточек.
+    if not seller_trademark and own_cards:
+        brands = Counter(
+            str(c.get("brand") or "").strip() for c in own_cards if c.get("brand")
+        )
+        if brands:
+            seller_trademark = brands.most_common(1)[0][0]
+
     content_summary = aggregate_content(own_cards) if own_cards else None
     (
         sales_summary,

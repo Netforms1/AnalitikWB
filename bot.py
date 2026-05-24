@@ -129,9 +129,11 @@ ABOUT = (
 # ───────────────────────── helpers ─────────────────────────
 
 async def _whoami(token: str) -> tuple[dict[str, Any], list[str]] | None:
-    """Разбираем JWT и пробуем подтвердить через /seller-info.
+    """Разбираем JWT — мгновенно, без сетевых вызовов.
 
-    Возвращаем (seller_info, scopes) либо None если токен явно битый.
+    Имя/бренд магазина подтянутся позже, во время полного анализа
+    (из Content API). seller-info на /start не дёргаем — он часто
+    режется 429 и тормозит запуск.
     """
     try:
         payload = parse_wb_token(token)
@@ -139,18 +141,10 @@ async def _whoami(token: str) -> tuple[dict[str, Any], list[str]] | None:
         log.info("token parse failed: %s", exc)
         return None
     scopes = token_scopes(payload)
-    sid = payload.get("sid") or payload.get("supplier_id")
+    sid = payload.get("sid") or payload.get("supplier_id") or payload.get("oid")
     if not sid:
         return None
     seller: dict[str, Any] = {"sid": sid}
-    # пробуем дёрнуть seller-info, но это не критично
-    try:
-        async with WBCommonClient(token) as client:
-            info = await client.get_seller_info()
-        if isinstance(info, dict):
-            seller.update({k: v for k, v in info.items() if v})
-    except Exception as exc:  # noqa: BLE001
-        log.info("seller-info call failed: %s", exc)
     return seller, scopes
 
 
