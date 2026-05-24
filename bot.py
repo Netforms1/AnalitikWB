@@ -306,6 +306,8 @@ def _build_header(report: Any, mode: str) -> str:
         "reviews": "⭐ АНАЛИЗ ОТЗЫВОВ",
         "assort": "📦 АНАЛИЗ АССОРТИМЕНТА",
         "demand": "📈 АНАЛИЗ СПРОСА",
+        "funnel": "🔁 АНАЛИЗ ВОРОНКИ",
+        "content": "🖼 КАЧЕСТВО КАРТОЧЕК",
         "brand": "🎯 СТРАТЕГИЯ PLATSER GROUP",
     }
     title = titles.get(mode, "📊 ОТЧЁТ")
@@ -327,6 +329,35 @@ def _build_header(report: Any, mode: str) -> str:
             f"📊 Продажи {s.period_days} дн: <b>{s.gross_revenue:,.0f} ₽</b> "
             f"(<b>{s.sales_count} шт</b>), возвратов <b>{s.returns_rate * 100:.1f}%</b>\n"
         )
+    if report.funnel and report.funnel.opens:
+        f = report.funnel
+        base += (
+            f"🔁 Воронка: <b>{f.opens:,}</b> показов → "
+            f"CR карточки <b>{f.cr_card_to_cart * 100:.1f}%</b> → "
+            f"выкуп <b>{f.cr_order_to_buyout * 100:.1f}%</b>\n"
+        )
+    if report.content:
+        c = report.content
+        base += (
+            f"🖼 Контент: <b>{c.avg_photos}</b> фото · "
+            f"видео <b>{c.cards_with_video_share * 100:.0f}%</b> · "
+            f"описание <b>{c.avg_description_len}</b> симв.\n"
+        )
+    if report.stocks and report.stocks.total_units:
+        st = report.stocks
+        dos = f" · {st.days_of_supply} дн оборот" if st.days_of_supply else ""
+        base += (
+            f"📦 Остатки: <b>{st.total_units:,}</b> шт{dos}\n"
+        )
+    if report.questions and report.questions.total:
+        q = report.questions
+        base += (
+            f"❓ Вопросов: <b>{q.total}</b> · "
+            f"без ответа <b>{q.unanswered}</b>\n"
+        )
+    if report.margin and report.margin.avg_commission_pct:
+        m = report.margin
+        base += f"💵 Комиссия WB: <b>{m.avg_commission_pct}%</b>\n"
     return base
 
 

@@ -66,6 +66,10 @@ def analysis_modes(supplier_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📦 Ассортимент", callback_data=f"run:assort:{sid}"),
                 InlineKeyboardButton(text="📈 Спрос", callback_data=f"run:demand:{sid}"),
             ],
+            [
+                InlineKeyboardButton(text="🔁 Воронка", callback_data=f"run:funnel:{sid}"),
+                InlineKeyboardButton(text="🖼 Контент", callback_data=f"run:content:{sid}"),
+            ],
             [InlineKeyboardButton(text="🎯 Совет под PlatSer", callback_data=f"run:brand:{sid}")],
             [InlineKeyboardButton(text="🔙 Сменить магазин", callback_data="menu:analyze")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:home")],

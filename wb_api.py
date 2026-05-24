@@ -68,6 +68,12 @@ STATS_SALES_URL = f"{STATS_API_BASE}/api/v1/supplier/sales"
 STATS_ORDERS_URL = f"{STATS_API_BASE}/api/v1/supplier/orders"
 STATS_STOCKS_URL = f"{STATS_API_BASE}/api/v1/supplier/stocks"
 
+CONTENT_API_BASE = "https://content-api.wildberries.ru"
+ANALYTICS_API_BASE = "https://seller-analytics-api.wildberries.ru"
+COMMON_API_BASE = "https://common-api.wildberries.ru"
+
+QUESTIONS_PUBLIC_URL = "https://questions.wb.ru/api/v1/questions"
+
 
 class WBApiError(RuntimeError):
     pass
@@ -228,6 +234,21 @@ class WBClient:
             out.extend((((data or {}).get("data") or {}).get("products")) or [])
         return out
 
+    async def get_questions(self, imt_id: int, take: int = 30) -> list[dict[str, Any]]:
+        """Вопросы клиентов по imtId (публичный эндпоинт)."""
+        assert self._session is not None
+        url = QUESTIONS_PUBLIC_URL
+        params = {"imtId": imt_id, "order": "dateDesc", "skip": 0, "take": take}
+        try:
+            async with self._session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json(content_type=None)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("questions failed: %s", exc)
+            return []
+        return ((data or {}).get("questions")) or []
+
     async def get_reviews(self, imt_id: int, take: int = 30) -> list[dict[str, Any]]:
         """Отзывы по imtId. Сервер шардится на feedbacks1/2."""
         assert self._session is not None
@@ -248,23 +269,24 @@ class WBClient:
         return []
 
 
-class WBSellerStatsClient:
-    """Клиент к WB Statistics API (продажи, заказы, остатки). Нужен JWT-токен."""
+class WBAuthClient:
+    """Базовый клиент к авторизованным WB API. Один токен — много скоупов."""
 
     def __init__(self, token: str, timeout: float = 60.0) -> None:
         if not token:
-            raise WBApiError("WB_SUPPLIER_TOKEN пуст — Statistics API недоступен")
+            raise WBApiError("WB-токен пуст — авторизованный API недоступен")
         self._token = token
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
 
-    async def __aenter__(self) -> "WBSellerStatsClient":
+    async def __aenter__(self):
         self._session = aiohttp.ClientSession(
             timeout=self._timeout,
             headers={
                 "Authorization": self._token,
                 "User-Agent": WB_BROWSER_HEADERS["User-Agent"],
                 "Accept": "application/json",
+                "Content-Type": "application/json",
             },
         )
         return self
@@ -274,7 +296,13 @@ class WBSellerStatsClient:
             await self._session.close()
             self._session = None
 
-    async def _get_json(self, url: str, params: dict[str, Any]) -> Any:
+    async def _request_json(
+        self,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None = None,
+        json_body: Any = None,
+    ) -> Any:
         assert self._session is not None
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(4),
@@ -283,19 +311,34 @@ class WBSellerStatsClient:
             reraise=True,
         ):
             with attempt:
-                async with self._session.get(url, params=params) as resp:
+                async with self._session.request(
+                    method, url, params=params, json=json_body
+                ) as resp:
                     if resp.status == 401:
                         raise WBApiError(
-                            "WB Statistics API: 401 — проверь WB_SUPPLIER_TOKEN"
+                            f"WB {url}: 401 — проверь токен и нужные скоупы"
+                        )
+                    if resp.status == 403:
+                        raise WBApiError(
+                            f"WB {url}: 403 — у токена нет нужного скоупа "
+                            "(или нет подписки Аналитика Pro)"
                         )
                     if resp.status == 429:
                         await asyncio.sleep(20)
                         raise aiohttp.ClientError("WB 429 rate limit")
                     if resp.status >= 500:
-                        raise aiohttp.ClientError(f"WB stats {resp.status}")
+                        raise aiohttp.ClientError(f"WB {resp.status} {url}")
+                    if resp.status == 404:
+                        return None
                     resp.raise_for_status()
                     return await resp.json(content_type=None)
         return None
+
+    async def _get(self, url: str, params: dict[str, Any] | None = None) -> Any:
+        return await self._request_json("GET", url, params=params)
+
+    async def _post(self, url: str, body: Any) -> Any:
+        return await self._request_json("POST", url, json_body=body)
 
     @staticmethod
     def _date_from(days_back: int) -> str:
@@ -304,20 +347,106 @@ class WBSellerStatsClient:
         dt = datetime.now(tz=timezone.utc) - timedelta(days=days_back)
         return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
+    @staticmethod
+    def _date_ymd(days_back: int) -> str:
+        from datetime import datetime, timedelta, timezone
+
+        dt = datetime.now(tz=timezone.utc) - timedelta(days=days_back)
+        return dt.strftime("%Y-%m-%d")
+
+
+class WBSellerStatsClient(WBAuthClient):
+    """WB Statistics API: продажи, заказы, остатки."""
+
     async def get_sales(self, days_back: int = 30) -> list[dict[str, Any]]:
         params = {"dateFrom": self._date_from(days_back), "flag": 0}
-        data = await self._get_json(STATS_SALES_URL, params=params)
+        data = await self._get(STATS_SALES_URL, params=params)
         return data or []
 
     async def get_orders(self, days_back: int = 30) -> list[dict[str, Any]]:
         params = {"dateFrom": self._date_from(days_back), "flag": 0}
-        data = await self._get_json(STATS_ORDERS_URL, params=params)
+        data = await self._get(STATS_ORDERS_URL, params=params)
         return data or []
 
     async def get_stocks(self, days_back: int = 7) -> list[dict[str, Any]]:
         params = {"dateFrom": self._date_from(days_back)}
-        data = await self._get_json(STATS_STOCKS_URL, params=params)
+        data = await self._get(STATS_STOCKS_URL, params=params)
         return data or []
+
+
+class WBContentClient(WBAuthClient):
+    """WB Content API: карточки и их контент (фото, видео, описание, характеристики)."""
+
+    async def get_cards(self, limit: int = 100) -> list[dict[str, Any]]:
+        url = f"{CONTENT_API_BASE}/content/v2/get/cards/list"
+        cards: list[dict[str, Any]] = []
+        cursor: dict[str, Any] = {"limit": min(limit, 100)}
+        while True:
+            body = {"settings": {"cursor": cursor, "filter": {"withPhoto": -1}}}
+            data = await self._post(url, body) or {}
+            chunk = data.get("cards") or []
+            cards.extend(chunk)
+            next_cursor = data.get("cursor") or {}
+            if (
+                not chunk
+                or len(cards) >= limit
+                or len(chunk) < cursor["limit"]
+                or not next_cursor.get("updatedAt")
+            ):
+                break
+            cursor = {
+                "limit": min(100, limit - len(cards)),
+                "updatedAt": next_cursor["updatedAt"],
+                "nmID": next_cursor.get("nmID"),
+            }
+        return cards[:limit]
+
+
+class WBAnalyticsClient(WBAuthClient):
+    """WB Seller Analytics API: воронка по SKU (показы→корзина→заказ→выкуп)."""
+
+    async def get_nm_funnel(
+        self, days_back: int = 30, page: int = 1
+    ) -> list[dict[str, Any]]:
+        url = f"{ANALYTICS_API_BASE}/api/v2/nm-report/detail"
+        body = {
+            "period": {
+                "begin": self._date_ymd(days_back),
+                "end": self._date_ymd(0),
+            },
+            "orderBy": {"field": "ordersSumRub", "mode": "desc"},
+            "page": page,
+        }
+        data = await self._post(url, body) or {}
+        return ((data.get("data") or {}).get("cards")) or []
+
+    async def get_brand_share(
+        self, brand_names: list[str], days_back: int = 30
+    ) -> dict[str, Any]:
+        url = f"{ANALYTICS_API_BASE}/api/v2/brand-share/brands"
+        body = {
+            "period": {
+                "begin": self._date_ymd(days_back),
+                "end": self._date_ymd(0),
+            },
+            "brandNames": brand_names,
+        }
+        return await self._post(url, body) or {}
+
+
+class WBCommonClient(WBAuthClient):
+    """WB Common API: тарифы (комиссии WB, логистика коробов)."""
+
+    async def get_commissions(self) -> list[dict[str, Any]]:
+        url = f"{COMMON_API_BASE}/api/v1/tariffs/commission"
+        data = await self._get(url, params={"locale": "ru"})
+        return ((data or {}).get("report")) or []
+
+    async def get_box_tariffs(self) -> dict[str, Any]:
+        url = f"{COMMON_API_BASE}/api/v1/tariffs/box"
+        params = {"date": self._date_ymd(0)}
+        data = await self._get(url, params=params)
+        return (data or {}).get("response", {}).get("data", {}) or {}
 
 
 async def gather_with_concurrency(n: int, *coros):
