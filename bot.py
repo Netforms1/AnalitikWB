@@ -543,6 +543,28 @@ def _split_for_telegram(text: str, limit: int = 3800) -> list[str]:
     return fixed
 
 
+@dp.callback_query()
+async def cb_fallback(query: CallbackQuery) -> None:
+    """Срабатывает на любые callback'и, для которых не нашлось хендлера —
+    обычно это кнопки из старых сообщений после обновления бота."""
+    log.info("unknown callback: %s", query.data)
+    await query.answer(
+        "Это старая кнопка. Отправь /start чтобы открыть новое меню.",
+        show_alert=True,
+    )
+
+
+@dp.message()
+async def msg_fallback(message: Message, state: FSMContext) -> None:
+    """Любые сообщения вне FSM-flow — подсказываем нажать /start."""
+    current = await state.get_state()
+    if current is not None:
+        return  # FSM-хендлер обработает
+    await message.answer(
+        "ℹ️ Я работаю только кнопками. Отправь /start чтобы открыть меню.",
+    )
+
+
 async def main() -> None:
     log.info("Bot starting…")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
